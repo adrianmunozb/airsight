@@ -1,0 +1,29 @@
+{
+  "camera_index": 0,
+  "screen": {
+    "width": 1920,
+    "height": 1080
+  },
+  "calibration": {
+    "enabled": true,
+    "points": 5
+  },
+  "smoothing": {
+    "ema_alpha": 0.35,
+    "outlier_px": 200
+  },
+  "dwell": {
+    "threshold_ms": 500,
+    "cooldown_ms": 250
+  },
+  "zones": {
+    "top_px": 120,
+    "bottom_px": 120,
+    "right_px": 140
+  },
+  "scroll": {
+    "amount": 120,
+    "interval_ms": 90
+  },
+  "show_preview": false
+}
