@@ -9,12 +9,118 @@
   const log = (emoji, ...args) => console.log(`${emoji} Eye Tracker:`, ...args);
   const warn = (emoji, ...args) => console.warn(`${emoji} Eye Tracker:`, ...args);
   const error = (emoji, ...args) => console.error(`${emoji} Eye Tracker:`, ...args);
+  const scrollConfig = {
+    dwellMs: 500,
+    cooldownMs: 250,
+    scrollAmount: 140,
+    topZoneRatio: 0.26,
+    bottomZoneRatio: 0.2,
+    minZonePx: 140,
+    maxZonePx: 320
+  };
+  const scrollState = { lastZone: null, zoneStart: 0, lastFire: 0 };
+  let lastScrollTarget = null;
+
+  function clamp(value, min, max) {
+    return Math.min(max, Math.max(min, value));
+  }
+
+  function getScrollZonePx() {
+    const h = window.innerHeight;
+    return {
+      topPx: Math.round(clamp(h * scrollConfig.topZoneRatio, scrollConfig.minZonePx, scrollConfig.maxZonePx)),
+      bottomPx: Math.round(clamp(h * scrollConfig.bottomZoneRatio, scrollConfig.minZonePx, scrollConfig.maxZonePx))
+    };
+  }
+
+  function isScrollable(el) {
+    if (!el) return false;
+    const style = window.getComputedStyle(el);
+    const overflowY = style.overflowY;
+    if (overflowY !== 'auto' && overflowY !== 'scroll' && overflowY !== 'overlay') return false;
+    return el.scrollHeight - el.clientHeight > 1;
+  }
+
+  function getScrollTarget(x, y) {
+    let el = document.elementFromPoint(x, y);
+    while (el && el !== document.body && el !== document.documentElement) {
+      if (isScrollable(el)) return el;
+      el = el.parentElement;
+    }
+    const root = document.scrollingElement || document.documentElement;
+    if (root && root.scrollHeight - root.clientHeight > 1) return root;
+    return null;
+  }
+
+  function handleScrollZone(x, y, now) {
+    let target = getScrollTarget(x, y);
+    if (!target && lastScrollTarget && isScrollable(lastScrollTarget)) {
+      target = lastScrollTarget;
+    }
+    if (!target) {
+      const root = document.scrollingElement || document.documentElement;
+      if (root && root.scrollHeight - root.clientHeight > 1) {
+        target = root;
+      }
+    }
+    if (!target) {
+      scrollState.lastZone = null;
+      return;
+    }
+    if (target !== lastScrollTarget) {
+      lastScrollTarget = target;
+    }
+
+    const { topPx, bottomPx } = getScrollZonePx();
+    let zone = null;
+    if (y <= topPx) zone = 'up';
+    else if (y >= window.innerHeight - bottomPx) zone = 'down';
+
+    const canUp = target.scrollTop > 0;
+    const canDown = target.scrollTop + target.clientHeight < target.scrollHeight - 1;
+    if (zone === 'up' && !canUp) zone = null;
+    if (zone === 'down' && !canDown) zone = null;
+
+    if (zone !== scrollState.lastZone) {
+      scrollState.lastZone = zone;
+      scrollState.zoneStart = now;
+      return;
+    }
+    if (!zone) return;
+    if (now - scrollState.zoneStart < scrollConfig.dwellMs) return;
+    if (now - scrollState.lastFire < scrollConfig.cooldownMs) return;
+
+    scrollState.lastFire = now;
+    const delta = zone === 'up' ? -scrollConfig.scrollAmount : scrollConfig.scrollAmount;
+    if (typeof target.scrollBy === 'function') {
+      target.scrollBy(0, delta);
+    } else {
+      target.scrollTop += delta;
+    }
+  }
 
   const isTrackerPage = window.location.hostname === 'localhost' &&
     (window.location.port === '8888' || window.location.port === '5500' || window.location.port === '3000');
 
+  function setupTabVisibilityLogs(label) {
+    const reportVisibility = () => {
+      const state = document.visibilityState;
+      if (state === 'hidden') {
+        log('🙈', `${label} tab hidden (another tab active)`);
+      } else {
+        log('👀', `${label} tab visible`);
+      }
+    };
+
+    document.addEventListener('visibilitychange', reportVisibility);
+    window.addEventListener('focus', () => log('🟢', `${label} tab focused`));
+    window.addEventListener('blur', () => log('🟡', `${label} tab blurred (other tab/window)`));
+    reportVisibility();
+  }
+
   // If we're on the eye tracker page, capture gaze data and send to extension
   if (isTrackerPage) {
+    setupTabVisibilityLogs('Tracker');
     log('🔭', 'Monitoring gaze data on tracker page');
 
     let sentCount = 0;
@@ -32,7 +138,9 @@
           chrome.runtime.sendMessage({
             type: 'GAZE_POSITION',
             x: data.x,
-            y: data.y
+            y: data.y,
+            vw: data.vw,
+            vh: data.vh
           }).catch((e) => {
             error('❌', 'Failed to send gaze:', e);
           });
@@ -61,7 +169,9 @@
               chrome.runtime.sendMessage({
                 type: 'GAZE_POSITION',
                 x: data.x,
-                y: data.y
+                y: data.y,
+                vw: data.vw,
+                vh: data.vh
               }).catch(() => { });
             }
           }
@@ -80,6 +190,7 @@
   }
 
   // For all other pages, create and show the gaze dot
+  setupTabVisibilityLogs('Overlay');
 
   // Create gaze dot element
   const gazeDot = document.createElement('div');
@@ -157,16 +268,30 @@
 
   let isVisible = false;
 
+  function mapGazeToViewport(message) {
+    let x = message.x;
+    let y = message.y;
+    if (Number.isFinite(message.vw) && Number.isFinite(message.vh) && message.vw > 0 && message.vh > 0) {
+      x = (x / message.vw) * window.innerWidth;
+      y = (y / message.vh) * window.innerHeight;
+    }
+    x = clamp(x, 0, Math.max(0, window.innerWidth - 1));
+    y = clamp(y, 0, Math.max(0, window.innerHeight - 1));
+    return { x, y };
+  }
+
   // Listen for gaze updates from background
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === 'GAZE_UPDATE') {
+      const mapped = mapGazeToViewport(message);
       if (!isVisible) {
         gazeDot.style.display = 'block';
         isVisible = true;
         log('👀', 'Gaze dot visible');
       }
-      gazeDot.style.left = `${message.x}px`;
-      gazeDot.style.top = `${message.y}px`;
+      gazeDot.style.left = `${mapped.x}px`;
+      gazeDot.style.top = `${mapped.y}px`;
+      handleScrollZone(mapped.x, mapped.y, performance.now());
     } else if (message.type === 'HIDE_GAZE') {
       gazeDot.style.display = 'none';
       isVisible = false;

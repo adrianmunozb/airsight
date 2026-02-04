@@ -2,7 +2,7 @@
 // Relays gaze data from the web app to all other tabs
 
 let isTracking = false;
-let lastGazePosition = { x: 0, y: 0 }; // Store last position for new tab connections
+let lastGazePosition = { x: 0, y: 0, vw: 0, vh: 0 }; // Store last position for new tab connections
 const NATIVE_HOST_NAME = 'com.eyetracker.server';
 const log = (emoji, ...args) => console.log(`${emoji} Eye Tracker:`, ...args);
 const warn = (emoji, ...args) => console.warn(`${emoji} Eye Tracker:`, ...args);
@@ -10,6 +10,29 @@ const error = (emoji, ...args) => console.error(`${emoji} Eye Tracker:`, ...args
 let heartbeatCount = 0;
 let trackerTabId = null;
 let keepAwakeRequested = false;
+
+// Log when the active tab changes to debug "other tab" behavior
+chrome.tabs.onActivated.addListener((activeInfo) => {
+    chrome.tabs.get(activeInfo.tabId).then((tab) => {
+        if (!tab || !tab.id) return;
+        if (trackerTabId && tab.id === trackerTabId) {
+            log('🟢', 'Tracker tab activated', tab.id);
+        } else if (trackerTabId) {
+            log('🟡', 'Other tab activated', tab.id, tab.url);
+        } else {
+            log('🧭', 'Tab activated (tracker tab not set)', tab.id, tab.url);
+        }
+    }).catch((e) => {
+        warn('⚠️', 'Active tab lookup failed', e);
+    });
+});
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+    if (trackerTabId === tabId) {
+        log('🧹', 'Tracker tab closed', tabId);
+        trackerTabId = null;
+    }
+});
 
 function requestKeepAwake() {
     if (!chrome.power || keepAwakeRequested) return;
@@ -43,7 +66,7 @@ async function startLocalServer() {
 }
 
 // Broadcast gaze position to all tabs (except the tracker page)
-async function broadcastGaze(x, y) {
+async function broadcastGaze(x, y, vw, vh) {
     try {
         const tabs = await chrome.tabs.query({});
         for (const tab of tabs) {
@@ -58,7 +81,9 @@ async function broadcastGaze(x, y) {
                     await chrome.tabs.sendMessage(tab.id, {
                         type: 'GAZE_UPDATE',
                         x: x,
-                        y: y
+                        y: y,
+                        vw: vw,
+                        vh: vh
                     });
                 } catch (e) {
                     // Tab might not have content script loaded yet
@@ -117,9 +142,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         case 'GAZE_POSITION':
             // Received from content script on tracker page, broadcast to all other tabs
             // Store the latest position for newly connected tabs
-            lastGazePosition = { x: message.x, y: message.y };
+            lastGazePosition = { x: message.x, y: message.y, vw: message.vw, vh: message.vh };
             if (isTracking) {
-                broadcastGaze(message.x, message.y);
+                broadcastGaze(message.x, message.y, message.vw, message.vh);
             }
             // Auto-enable tracking when we receive gaze data
             if (!isTracking) {
@@ -134,8 +159,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             // The tracker page is open and monitoring
             chrome.storage.local.set({ isCalibrated: true });
             if (sender.tab && sender.tab.id) {
+                const previousTrackerTabId = trackerTabId;
                 trackerTabId = sender.tab.id;
                 chrome.tabs.setAutoDiscardable(sender.tab.id, false, () => { });
+                if (previousTrackerTabId && previousTrackerTabId !== trackerTabId) {
+                    log('🔁', 'Tracker tab changed', previousTrackerTabId, '->', trackerTabId);
+                } else {
+                    log('📍', 'Tracker tab set', trackerTabId);
+                }
             }
             log('TRACKER', 'Tracker page active');
             sendResponse({ success: true });
@@ -153,7 +184,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                 chrome.tabs.sendMessage(sender.tab.id, {
                     type: 'GAZE_UPDATE',
                     x: lastGazePosition.x,
-                    y: lastGazePosition.y
+                    y: lastGazePosition.y,
+                    vw: lastGazePosition.vw,
+                    vh: lastGazePosition.vh
                 }).catch(() => { });
                 log('POS', 'Sent last known position to tab', sender.tab.id);
             }

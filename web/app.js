@@ -173,8 +173,10 @@ const config = {
   dwellMs: 500,
   cooldownMs: 250,
   scrollAmount: 140,
-  topZone: 120,
-  bottomZone: 120,
+  topZoneRatio: 0.26,
+  bottomZoneRatio: 0.2,
+  minZonePx: 140,
+  maxZonePx: 320,
   rightZone: 140,
   calibrationDwellMs: 900,
   calibrationForceMs: 8000,
@@ -194,6 +196,18 @@ const config = {
 const log = (emoji, ...args) => console.log(`${emoji} Eye Tracker:`, ...args);
 const warn = (emoji, ...args) => console.warn(`${emoji} Eye Tracker:`, ...args);
 const error = (emoji, ...args) => console.error(`${emoji} Eye Tracker:`, ...args);
+
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function getScrollZonePx() {
+  const h = window.innerHeight;
+  return {
+    topPx: Math.round(clamp(h * config.topZoneRatio, config.minZonePx, config.maxZonePx)),
+    bottomPx: Math.round(clamp(h * config.bottomZoneRatio, config.minZonePx, config.maxZonePx)),
+  };
+}
 
 function inMenuCircle(x, y) {
   const rect = menu.getBoundingClientRect();
@@ -226,9 +240,10 @@ function handleMenu(action) {
 }
 
 function handleScrollZone(x, y, now) {
+  const { topPx, bottomPx } = getScrollZonePx();
   let zone = null;
-  if (y <= config.topZone) zone = 'up';
-  else if (y >= window.innerHeight - config.bottomZone) zone = 'down';
+  if (y <= topPx) zone = 'up';
+  else if (y >= window.innerHeight - bottomPx) zone = 'down';
   else if (x >= window.innerWidth - config.rightZone) zone = 'right';
 
   if (zone !== state.lastZone) {
@@ -443,9 +458,15 @@ function setupWebgazer() {
           window.__gazeChannel = new BroadcastChannel('eyetracker_gaze');
           log('📡', 'BroadcastChannel created');
         }
-        window.__gazeChannel.postMessage({ x, y, ts: Date.now() });
+        window.__gazeChannel.postMessage({ x, y, vw: window.innerWidth, vh: window.innerHeight, ts: Date.now() });
         // Also update localStorage as fallback
-        localStorage.setItem('eyetracker_gaze', JSON.stringify({ x, y, ts: Date.now() }));
+        localStorage.setItem('eyetracker_gaze', JSON.stringify({
+          x,
+          y,
+          vw: window.innerWidth,
+          vh: window.innerHeight,
+          ts: Date.now()
+        }));
       } catch (e) {
         // Ignore errors
         warn('⚠️', 'Broadcast/localStorage failed:', e);
@@ -596,8 +617,20 @@ async function startTracking(e) {
                     window.__gazeChannel = new BroadcastChannel('eyetracker_gaze');
                     log('📡', 'BroadcastChannel created (pump)');
                   }
-                  window.__gazeChannel.postMessage({ x: prediction.x, y: prediction.y, ts: Date.now() });
-                  localStorage.setItem('eyetracker_gaze', JSON.stringify({ x: prediction.x, y: prediction.y, ts: Date.now() }));
+                  window.__gazeChannel.postMessage({
+                    x: prediction.x,
+                    y: prediction.y,
+                    vw: window.innerWidth,
+                    vh: window.innerHeight,
+                    ts: Date.now()
+                  });
+                  localStorage.setItem('eyetracker_gaze', JSON.stringify({
+                    x: prediction.x,
+                    y: prediction.y,
+                    vw: window.innerWidth,
+                    vh: window.innerHeight,
+                    ts: Date.now()
+                  }));
                 } catch (e) { }
               }
             } catch (e) {
