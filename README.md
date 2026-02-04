@@ -19,6 +19,16 @@ pip install -r requirements.txt
 python src\main.py
 ```
 
+## Auto-start local web server (Chrome extension)
+The extension cannot start a local server without a native host. To enable
+auto-start for `http://localhost:8888`, install the native host once:
+1) Load the extension in `chrome://extensions` and copy its ID.
+2) Run:
+```
+.\native\install_native_host.ps1 -ExtensionId <YOUR_EXTENSION_ID>
+```
+3) Reload the extension.
+
 ## Notes
 - Calibration runs on first start if no calibration matrix exists (press SPACE to capture each point).
 - Calibration captures points by gaze dwell (no keyboard required).

@@ -1,0 +1,6 @@
+/* Content script styles - minimal since most styling is inline */
+/* This file exists for the manifest but styles are applied inline for reliability */
+
+#eye-tracker-gaze-dot {
+    /* Styles applied inline in content.js for guaranteed application */
+}

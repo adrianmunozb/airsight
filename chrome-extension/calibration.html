@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Eye Tracker Calibration</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg: #0a0c10;
+            --surface: rgba(20, 24, 32, 0.75);
+            --surface-solid: #141820;
+            --accent: #ff4f44;
+            --accent-glow: rgba(255, 79, 68, 0.6);
+            --success: #22c55e;
+            --success-glow: rgba(34, 197, 94, 0.6);
+            --text: #f0f0f0;
+            --text-secondary: rgba(240, 240, 240, 0.7);
+            --border: rgba(255, 255, 255, 0.08);
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            height: 100vh;
+            background: var(--bg);
+            background-image:
+                radial-gradient(ellipse at 20% 0%, rgba(255, 79, 68, 0.08) 0%, transparent 50%),
+                radial-gradient(ellipse at 80% 100%, rgba(99, 102, 241, 0.06) 0%, transparent 50%);
+            overflow: hidden;
+            font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, sans-serif;
+            color: var(--text);
+        }
+
+        /* Start overlay */
+        .start-overlay {
+            position: fixed;
+            inset: 0;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            background: rgba(10, 12, 16, 0.92);
+            backdrop-filter: blur(12px);
+            z-index: 100;
+        }
+
+        .start-overlay.active {
+            display: flex;
+            animation: fadeIn 0.3s ease-out;
+        }
+
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+            }
+
+            to {
+                opacity: 1;
+            }
+        }
+
+        .start-card {
+            position: relative;
+            background: linear-gradient(145deg, rgba(30, 35, 45, 0.9), rgba(20, 24, 32, 0.95));
+            border: 1px solid var(--border);
+            padding: 40px 48px;
+            border-radius: 24px;
+            text-align: center;
+            width: 420px;
+            max-width: 90vw;
+            box-shadow:
+                0 25px 50px -12px rgba(0, 0, 0, 0.5),
+                0 0 0 1px rgba(255, 255, 255, 0.05) inset;
+            animation: cardSlideUp 0.4s ease-out;
+        }
+
+        @keyframes cardSlideUp {
+            from {
+                opacity: 0;
+                transform: translateY(20px);
+            }
+
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .start-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 100px;
+            height: 3px;
+            background: linear-gradient(90deg, transparent, var(--accent), transparent);
+            border-radius: 0 0 4px 4px;
+        }
+
+        .start-icon {
+            width: 72px;
+            height: 72px;
+            margin: 0 auto 24px;
+            background: linear-gradient(135deg, var(--accent), #ff7b6b);
+            border-radius: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 8px 24px var(--accent-glow);
+        }
+
+        .start-icon svg {
+            width: 36px;
+            height: 36px;
+            fill: white;
+        }
+
+        .start-title {
+            font-size: 26px;
+            font-weight: 700;
+            margin-bottom: 12px;
+            letter-spacing: -0.02em;
+        }
+
+        .start-text {
+            font-size: 15px;
+            color: var(--text-secondary);
+            margin-bottom: 32px;
+            line-height: 1.6;
+        }
+
+        .start-card button {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            background: linear-gradient(135deg, var(--accent), #ff6b5e);
+            border: none;
+            color: #fff;
+            padding: 16px 48px;
+            border-radius: 14px;
+            font-size: 17px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            box-shadow: 0 4px 16px var(--accent-glow);
+            animation: buttonPulse 2s ease-in-out infinite;
+        }
+
+        .start-card button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 24px var(--accent-glow);
+        }
+
+        @keyframes buttonPulse {
+
+            0%,
+            100% {
+                box-shadow: 0 4px 16px var(--accent-glow), 0 0 0 0 var(--accent-glow);
+            }
+
+            50% {
+                box-shadow: 0 4px 16px var(--accent-glow), 0 0 0 8px rgba(255, 79, 68, 0.1);
+            }
+        }
+
+        /* Calibration */
+        .calibration {
+            position: fixed;
+            inset: 0;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            background: rgba(10, 12, 16, 0.8);
+            backdrop-filter: blur(8px);
+            z-index: 90;
+        }
+
+        .calibration.active {
+            display: flex;
+            animation: fadeIn 0.3s ease-out;
+            pointer-events: none;
+        }
+
+        .calibration-dot {
+            position: absolute;
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            background: var(--accent);
+            box-shadow: 0 0 20px var(--accent-glow), 0 0 40px var(--accent-glow);
+            transform: translate(-50%, -50%);
+            cursor: pointer;
+            transition: all 0.3s ease;
+            animation: calibratePulse 1s ease-in-out infinite;
+            z-index: 100;
+            pointer-events: auto;
+        }
+
+        .calibration-dot:hover {
+            transform: translate(-50%, -50%) scale(1.2);
+        }
+
+        .calibration-dot.ready {
+            background: var(--success);
+            box-shadow: 0 0 20px var(--success-glow), 0 0 40px var(--success-glow);
+            animation: none;
+        }
+
+        .calibration-dot.holding {
+            transform: translate(-50%, -50%) scale(1.5);
+            background: #ffaa00;
+            box-shadow: 0 0 30px rgba(255, 170, 0, 0.8), 0 0 60px rgba(255, 170, 0, 0.5);
+            animation: none;
+        }
+
+        @keyframes calibratePulse {
+
+            0%,
+            100% {
+                transform: translate(-50%, -50%) scale(1);
+            }
+
+            50% {
+                transform: translate(-50%, -50%) scale(1.15);
+            }
+        }
+
+        .calibration-text {
+            position: fixed;
+            bottom: 40px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: var(--surface);
+            backdrop-filter: blur(12px);
+            padding: 16px 28px;
+            border-radius: 16px;
+            border: 1px solid var(--border);
+            font-size: 15px;
+            color: var(--text-secondary);
+            text-align: center;
+            max-width: 500px;
+        }
+
+        .calibration-progress {
+            position: fixed;
+            top: 40px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 10px;
+        }
+
+        .calibration-progress-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: rgba(255, 255, 255, 0.15);
+            transition: all 0.3s ease;
+        }
+
+        .calibration-progress-dot.done {
+            background: var(--success);
+            box-shadow: 0 0 8px var(--success-glow);
+        }
+
+        .calibration-progress-dot.current {
+            background: var(--accent);
+            box-shadow: 0 0 8px var(--accent-glow);
+        }
+
+        /* Status */
+        .status {
+            position: fixed;
+            left: 20px;
+            top: 20px;
+            font-size: 13px;
+            background: var(--surface);
+            backdrop-filter: blur(12px);
+            padding: 10px 16px 10px 12px;
+            border-radius: 12px;
+            border: 1px solid var(--border);
+            z-index: 80;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .status::before {
+            content: '';
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--success);
+            box-shadow: 0 0 8px var(--success-glow);
+            animation: statusBlink 2s ease-in-out infinite;
+        }
+
+        @keyframes statusBlink {
+
+            0%,
+            100% {
+                opacity: 1;
+            }
+
+            50% {
+                opacity: 0.4;
+            }
+        }
+
+        /* Gaze dot for testing */
+        .gaze-dot {
+            position: fixed;
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            background: var(--accent);
+            pointer-events: none;
+            transform: translate(-50%, -50%);
+            box-shadow:
+                0 0 20px var(--accent-glow),
+                0 0 40px var(--accent-glow),
+                inset 0 0 8px rgba(255, 255, 255, 0.3);
+            z-index: 50;
+            transition: left 0.08s ease-out, top 0.08s ease-out;
+            display: none;
+        }
+
+        .gaze-dot.active {
+            display: block;
+        }
+
+        .gaze-dot::after {
+            content: '';
+            position: absolute;
+            inset: -4px;
+            border: 2px solid var(--accent);
+            border-radius: 50%;
+            opacity: 0.4;
+            animation: gaze-pulse 1.5s ease-in-out infinite;
+        }
+
+        @keyframes gaze-pulse {
+
+            0%,
+            100% {
+                transform: scale(1);
+                opacity: 0.4;
+            }
+
+            50% {
+                transform: scale(1.3);
+                opacity: 0.1;
+            }
+        }
+
+        /* Complete overlay */
+        .complete-overlay {
+            position: fixed;
+            inset: 0;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            background: rgba(10, 12, 16, 0.92);
+            backdrop-filter: blur(12px);
+            z-index: 100;
+        }
+
+        .complete-overlay.active {
+            display: flex;
+            animation: fadeIn 0.3s ease-out;
+        }
+
+        .complete-card {
+            background: linear-gradient(145deg, rgba(30, 35, 45, 0.9), rgba(20, 24, 32, 0.95));
+            border: 1px solid var(--border);
+            padding: 40px 48px;
+            border-radius: 24px;
+            text-align: center;
+            width: 420px;
+            max-width: 90vw;
+        }
+
+        .complete-icon {
+            width: 72px;
+            height: 72px;
+            margin: 0 auto 24px;
+            background: linear-gradient(135deg, var(--success), #34d399);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 36px;
+        }
+
+        .complete-title {
+            font-size: 24px;
+            font-weight: 700;
+            margin-bottom: 12px;
+        }
+
+        .complete-text {
+            font-size: 15px;
+            color: var(--text-secondary);
+            margin-bottom: 24px;
+        }
+
+        .complete-card button {
+            background: linear-gradient(135deg, var(--success), #34d399);
+            border: none;
+            color: #fff;
+            padding: 14px 32px;
+            border-radius: 12px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .complete-card button:hover {
+            transform: translateY(-2px);
+        }
+    </style>
+</head>
+
+<body>
+    <div id="gaze-dot" class="gaze-dot"></div>
+
+    <div id="start" class="start-overlay active">
+        <div class="start-card">
+            <div class="start-icon">
+                <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                    <path
+                        d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z" />
+                </svg>
+            </div>
+            <div class="start-title">Eye Tracker Calibration</div>
+            <div class="start-text">
+                Click the button below to enable camera access and begin calibration.
+                The gaze dot will then appear on all websites you visit.
+            </div>
+            <button id="start-btn">Start Calibration</button>
+        </div>
+    </div>
+
+    <div id="calibration" class="calibration">
+        <div id="calibration-progress" class="calibration-progress"></div>
+        <div id="calibration-dot" class="calibration-dot"></div>
+        <div class="calibration-text">
+            Click and HOLD each glowing dot while looking at it. Hold for 1.5 seconds.
+        </div>
+    </div>
+
+    <div id="complete" class="complete-overlay">
+        <div class="complete-card">
+            <div class="complete-icon">✓</div>
+            <div class="complete-title">Calibration Complete!</div>
+            <div class="complete-text">
+                The eye tracker is now active. You can close this tab and browse any website -
+                the red gaze dot will follow your eyes.
+            </div>
+            <button id="done-btn">Start Tracking</button>
+        </div>
+    </div>
+
+    <div id="status" class="status">Idle — awaiting start</div>
+
+    <script src="webgazer.min.js"></script>
+    <script src="calibration.js"></script>
+</body>
+
+</html>

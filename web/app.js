@@ -1,3 +1,143 @@
+// CRITICAL: Override Page Visibility API to prevent WebGazer from pausing
+// when the tab loses focus. This is essential for Chrome extension mode.
+// This MUST be at the top, before WebGazer loads its visibility handlers.
+(function () {
+  let keepaliveStarted = false;
+  let keepaliveAudioCtx = null;
+  let keepaliveWorker = null;
+  let keepaliveWakeLock = null;
+  const log = (emoji, ...args) => console.log(`${emoji} Eye Tracker:`, ...args);
+  const warn = (emoji, ...args) => console.warn(`${emoji} Eye Tracker:`, ...args);
+  const error = (emoji, ...args) => console.error(`${emoji} Eye Tracker:`, ...args);
+  // Override hidden to always return false
+  Object.defineProperty(document, 'hidden', {
+    get: function () {
+      return false;
+    },
+    configurable: true
+  });
+
+  // Override visibilityState to always return 'visible'
+  Object.defineProperty(document, 'visibilityState', {
+    get: function () {
+      return 'visible';
+    },
+    configurable: true
+  });
+  log('🔆', 'Visibility override active');
+
+  // NOTE: We do NOT override addEventListener as that breaks TensorFlow.js
+  // The property overrides above are sufficient - any visibility listeners
+  // will get 'visible' state when they check
+
+  // ============================================
+  // ANTI-THROTTLING: Keep tab active using multiple techniques
+  // ============================================
+
+  // 1. Web Audio API - Creates a silent audio context that keeps the tab active
+  function startAudioKeepalive() {
+    try {
+      if (keepaliveAudioCtx) return keepaliveAudioCtx;
+      log('🔊', 'Starting audio keepalive...');
+      const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+      // Create a silent oscillator
+      const oscillator = audioCtx.createOscillator();
+      const gainNode = audioCtx.createGain();
+
+      // Set volume to 0 (completely silent)
+      gainNode.gain.value = 0;
+
+      oscillator.connect(gainNode);
+      gainNode.connect(audioCtx.destination);
+      oscillator.start();
+
+      log('🎧', 'Audio keepalive started');
+
+      // Resume audio context on user interaction (required by browsers)
+      document.addEventListener('click', () => {
+        if (audioCtx.state === 'suspended') {
+          log('🟢', 'Resuming AudioContext after user gesture');
+          audioCtx.resume();
+        }
+      }, { once: true });
+
+      keepaliveAudioCtx = audioCtx;
+      return keepaliveAudioCtx;
+    } catch (e) {
+      warn('⚠️', 'Audio keepalive failed:', e);
+      return null;
+    }
+  }
+
+  // 2. Web Worker - Provides unthrottled timers
+  function startWorkerKeepalive() {
+    try {
+      if (keepaliveWorker) return keepaliveWorker;
+      log('🧵', 'Starting worker keepalive...');
+      const workerCode = `
+        // Worker runs at full speed even when tab is in background
+        let count = 0;
+        setInterval(() => {
+          count++;
+          postMessage({ type: 'tick', count: count });
+        }, 250); // keepalive tick (4fps to reduce main-thread load)
+      `;
+
+      const blob = new Blob([workerCode], { type: 'application/javascript' });
+      const worker = new Worker(URL.createObjectURL(blob));
+
+      worker.onmessage = function (e) {
+        // Worker tick received - this keeps the main thread active
+        if (e.data.count % 60 === 0) {
+          log('⏱️', 'Worker keepalive tick', e.data.count);
+        }
+      };
+
+      log('✅', 'Worker keepalive started');
+      keepaliveWorker = worker;
+      return keepaliveWorker;
+    } catch (e) {
+      warn('⚠️', 'Worker keepalive failed:', e);
+      return null;
+    }
+  }
+
+  // 3. Request lock to prevent tab from sleeping (if available)
+  async function requestWakeLock() {
+    try {
+      if ('wakeLock' in navigator) {
+        if (keepaliveWakeLock) return keepaliveWakeLock;
+        log('🔒', 'Requesting wake lock...');
+        const wakeLock = await navigator.wakeLock.request('screen');
+        log('✅', 'Wake lock acquired');
+        keepaliveWakeLock = wakeLock;
+        return keepaliveWakeLock;
+      }
+    } catch (e) {
+      warn('⚠️', 'Wake lock failed:', e);
+    }
+    return null;
+  }
+
+  function startAllKeepalive() {
+    if (keepaliveStarted) return;
+    keepaliveStarted = true;
+    log('🚀', 'Starting all keepalive mechanisms...');
+    startAudioKeepalive();
+    startWorkerKeepalive();
+    requestWakeLock();
+  }
+
+  // Start all keepalive mechanisms when page loads
+  window.addEventListener('load', startAllKeepalive);
+
+  // Also start immediately if already loaded
+  if (document.readyState === 'complete') {
+    startAllKeepalive();
+  }
+})();
+
 const gazeDot = document.getElementById('gaze-dot');
 const menu = document.getElementById('menu');
 const buttons = Array.from(document.querySelectorAll('.menu-ring button'));
@@ -21,6 +161,12 @@ const state = {
   started: false,
   lastDataTs: 0,
   webgazerReady: false,
+  lastPumpTs: 0,
+  lastResumeTs: 0,
+  gazeReady: false,
+  pendingCalibration: false,
+  calibrationForceTimer: null,
+  faceReady: false,
 };
 
 const config = {
@@ -31,6 +177,7 @@ const config = {
   bottomZone: 120,
   rightZone: 140,
   calibrationDwellMs: 900,
+  calibrationForceMs: 8000,
   calibrationPoints: [
     [0.5, 0.5],   // center
     [0.1, 0.1],   // top-left
@@ -43,6 +190,10 @@ const config = {
     [0.9, 0.5],   // right-center
   ],
 };
+
+const log = (emoji, ...args) => console.log(`${emoji} Eye Tracker:`, ...args);
+const warn = (emoji, ...args) => console.warn(`${emoji} Eye Tracker:`, ...args);
+const error = (emoji, ...args) => console.error(`${emoji} Eye Tracker:`, ...args);
 
 function inMenuCircle(x, y) {
   const rect = menu.getBoundingClientRect();
@@ -67,6 +218,7 @@ function hoverAction(x, y) {
 }
 
 function handleMenu(action) {
+  log('🧭', 'Menu action:', action);
   if (action === 'pause') state.enabled = false;
   if (action === 'resume') state.enabled = true;
   if (action === 'recalibrate') startCalibration();
@@ -89,6 +241,7 @@ function handleScrollZone(x, y, now) {
   if (now - state.lastFire < config.cooldownMs) return;
 
   state.lastFire = now;
+  log('🧭', 'Scroll zone fired:', zone);
   if (zone === 'up') window.scrollBy(0, -config.scrollAmount);
   if (zone === 'down') window.scrollBy(0, config.scrollAmount);
   if (zone === 'right') window.scrollBy(config.scrollAmount, 0);
@@ -110,6 +263,7 @@ function handleMenuDwell(action, now) {
 
 function createCalibrationProgress() {
   calibrationProgress.innerHTML = '';
+  log('🎯', 'Creating calibration progress dots');
   config.calibrationPoints.forEach((_, i) => {
     const dot = document.createElement('div');
     dot.className = 'calibration-progress-dot';
@@ -127,7 +281,8 @@ function updateCalibrationProgress() {
   });
 }
 
-function startCalibration() {
+function beginCalibration() {
+  log('🎯', 'Calibration started');
   state.calibrating = true;
   state.calibrationIndex = 0;
   state.calibrationStart = 0;
@@ -140,10 +295,39 @@ function startCalibration() {
   statusEl.textContent = `Calibration 1/${config.calibrationPoints.length} - HOLD the dot while looking at it`;
 }
 
+function startCalibration(force = false) {
+  if (state.calibrating) return;
+  if (!force && !state.faceReady) {
+    state.pendingCalibration = true;
+    statusEl.textContent = 'Waiting for gaze tracking to start... keep your face visible';
+    log('?', 'Calibration deferred until gaze is ready');
+    if (!state.calibrationForceTimer) {
+      state.calibrationForceTimer = setTimeout(() => {
+        state.calibrationForceTimer = null;
+        if (state.pendingCalibration && !state.calibrating) {
+          log('??', 'Forcing calibration start without gaze data');
+          startCalibration(true);
+        }
+      }, config.calibrationForceMs);
+    }
+    return;
+  }
+  state.pendingCalibration = false;
+  if (state.calibrationForceTimer) {
+    clearTimeout(state.calibrationForceTimer);
+    state.calibrationForceTimer = null;
+  }
+  beginCalibration();
+  if (!state.gazeReady) {
+    statusEl.textContent = 'Calibration started (no gaze yet). Hold/click the dot to collect samples.';
+  }
+}
+
 function moveCalibrationDot() {
   const [nx, ny] = config.calibrationPoints[state.calibrationIndex];
   const x = nx * window.innerWidth;
   const y = ny * window.innerHeight;
+  log('🎯', `Move calibration dot to index ${state.calibrationIndex}`, x, y);
   calibrationDot.style.left = `${x}px`;
   calibrationDot.style.top = `${y}px`;
   calibrationDot.classList.remove('ready');
@@ -163,11 +347,13 @@ function handleCalibration(x, y, now) {
     }
     if (now - state.calibrationStart >= config.calibrationDwellMs) {
       calibrationDot.classList.add('ready');
+      log('✅', 'Calibration point captured', state.calibrationIndex);
       webgazer.recordScreenPosition(tx, ty, 'click');
       state.calibrationIndex += 1;
       state.calibrationStart = 0;
       updateCalibrationProgress();
       if (state.calibrationIndex >= config.calibrationPoints.length) {
+        log('✅', 'Calibration complete');
         state.calibrating = false;
         calibration.classList.remove('active');
         return;
@@ -184,31 +370,45 @@ function setupWebgazer() {
   if (state.webgazerReady) return;
   if (!window.webgazer) return;
   state.webgazerReady = true;
+  log('🧠', 'Setting up WebGazer');
 
   let nullCount = 0;
+  let gazeCount = 0;
 
   webgazer
     .setGazeListener((data) => {
       if (!data) {
         nullCount++;
         if (nullCount % 30 === 0) {
-          console.log('WebGazer returning null predictions:', nullCount, 'times');
+          warn('⚠️', 'WebGazer returning null predictions:', nullCount, 'times');
           // Debug: check if tracker is detecting features
           try {
             const tracker = webgazer.getTracker();
             const videoElement = document.getElementById('webgazerVideoFeed');
             if (videoElement) {
-              console.log('Video element exists, dimensions:', videoElement.videoWidth, 'x', videoElement.videoHeight);
-              console.log('Video ready state:', videoElement.readyState);
+              log('??', 'Video element exists, dimensions:', videoElement.videoWidth, 'x', videoElement.videoHeight);
+              log('???', 'Video ready state:', videoElement.readyState);
             } else {
-              console.log('Video element NOT found');
+              warn('??', 'Video element NOT found');
             }
+
+            if (tracker && tracker.getPositions) {
+              const positions = tracker.getPositions();
+              if (positions && positions.length > 0 && !state.faceReady) {
+                state.faceReady = true;
+                log('?', 'Face mesh detected (no gaze yet)');
+                if (state.pendingCalibration) {
+                  startCalibration();
+                }
+              }
+            }
+
             if (tracker && tracker.getCurrentPosition) {
               const pos = tracker.getCurrentPosition();
-              console.log('Tracker position:', pos);
+              log('??', 'Tracker position:', pos);
             }
           } catch (e) {
-            console.log('Debug error:', e);
+            error('❌', 'Debug error:', e);
           }
         }
         return;
@@ -216,12 +416,40 @@ function setupWebgazer() {
 
       nullCount = 0; // Reset on valid data
 
+      if (!state.gazeReady) {
+        state.gazeReady = true;
+        log('\u2705', 'Gaze predictions ready');
+        if (state.pendingCalibration) {
+          startCalibration();
+        }
+      }
+
       const x = data.x;
       const y = data.y;
       gazeDot.style.left = `${x}px`;
       gazeDot.style.top = `${y}px`;
       state.lastDataTs = performance.now();
       statusEl.textContent = `Status: tracking (${Math.round(x)}, ${Math.round(y)})`;
+      gazeCount += 1;
+      if (gazeCount % 60 === 0) {
+        log('👀', 'Gaze data', Math.round(x), Math.round(y), 'count', gazeCount);
+      }
+
+      // Broadcast gaze position for Chrome extension to pick up
+      // Use both BroadcastChannel (fast) and localStorage (fallback)
+      try {
+        // BroadcastChannel is not throttled like timers
+        if (!window.__gazeChannel) {
+          window.__gazeChannel = new BroadcastChannel('eyetracker_gaze');
+          log('📡', 'BroadcastChannel created');
+        }
+        window.__gazeChannel.postMessage({ x, y, ts: Date.now() });
+        // Also update localStorage as fallback
+        localStorage.setItem('eyetracker_gaze', JSON.stringify({ x, y, ts: Date.now() }));
+      } catch (e) {
+        // Ignore errors
+        warn('⚠️', 'Broadcast/localStorage failed:', e);
+      }
 
       const now = performance.now();
 
@@ -250,14 +478,16 @@ function setupWebgazer() {
   webgazer.showVideo(false);
   webgazer.showFaceOverlay(false);
   webgazer.showFaceFeedbackBox(false);
+  webgazer.showPredictionPoints(false);
+  log('🙈', 'WebGazer video/overlays hidden');
 }
 
 async function startTracking(e) {
   if (e) e.stopPropagation();
-  console.log('startTracking called');
+  log('▶️', 'startTracking called');
 
   if (state.started) {
-    console.log('Already started');
+    warn('⚠️', 'Already started');
     return;
   }
 
@@ -275,18 +505,20 @@ async function startTracking(e) {
   if (!window.webgazer) {
     statusEl.textContent = 'Error: WebGazer failed to load';
     startOverlay.classList.add('active');
+    error('❌', 'WebGazer failed to load');
     return;
   }
 
   setupWebgazer();
   state.started = true;
   statusEl.textContent = 'Starting camera...';
+  log('📷', 'Requesting camera access...');
 
   try {
     // Explicitly set the tracker to TensorFaceMesh
     if (webgazer.setTracker) {
       webgazer.setTracker('TFFacemesh');
-      console.log('Set tracker to TFFacemesh');
+      log('✅', 'Tracker set to TFFacemesh');
     }
 
     // Use ridge regression (more reliable than threadedRidge)
@@ -294,18 +526,108 @@ async function startTracking(e) {
     // Clear old data to start fresh
     webgazer.clearData();
     webgazer.saveDataAcrossSessions(false); // Don't use potentially corrupted old data
+    log('🧹', 'Cleared WebGazer data for fresh session');
 
     statusEl.textContent = 'Requesting camera...';
     await webgazer.begin();
+    log('✅', 'WebGazer begin complete');
+
+    // CRITICAL: Prevent WebGazer from pausing when tab loses focus
+    // This is essential for the Chrome extension to work across tabs
+    if (webgazer.pause && webgazer.resume) {
+      // Override visibility change behavior
+      document.removeEventListener('visibilitychange', webgazer._onVisibilityChange);
+      // Ensure tracking continues even when tab is hidden
+      webgazer.resume();
+      log('🔁', 'WebGazer resume forced');
+    }
+
+    // CRITICAL: Store the pump function to start AFTER calibration completes
+    // Starting it during calibration interferes with the gaze listener
+    window.__startBackgroundPump = function () {
+      if (window.__pumpStarted) return;
+      window.__pumpStarted = true;
+      log('🔄', 'Starting background pump worker');
+
+      // Create a worker that sends ticks at full speed
+      const pumpWorkerCode = `
+        setInterval(() => postMessage('tick'), 100);
+      `;
+      const pumpBlob = new Blob([pumpWorkerCode], { type: 'application/javascript' });
+      const pumpWorker = new Worker(URL.createObjectURL(pumpBlob));
+
+      pumpWorker.onmessage = () => {
+        // SMART PUMP: Only force prediction if the main loop isn't running fast enough
+        // This prevents double-calculation when the tab is active
+        const now = performance.now();
+        const timeSinceLastUpdate = now - state.lastDataTs;
+        if (now - state.lastPumpTs < 200) return;
+        state.lastPumpTs = now;
+
+        if (state.started && !state.calibrating && timeSinceLastUpdate > 200) {
+          // It's been >200ms since last update, so the main loop is likely throttled/paused
+          // Force a frame processing
+          if (webgazer.getCurrentPrediction) {
+            try {
+              // Ensure video is playing (Chrome pauses background video)
+              const videoEl = document.getElementById('webgazerVideoFeed');
+              if (videoEl && videoEl.paused) {
+                videoEl.play().catch(() => { });
+              }
+
+              // This forces WebGazer to process the current video frame
+              const prediction = webgazer.getCurrentPrediction();
+
+              // If we get a prediction, broadcast it
+              if (prediction && prediction.x !== undefined) {
+                if (!window.__pumpLogCount) window.__pumpLogCount = 0;
+                window.__pumpLogCount += 1;
+                if (window.__pumpLogCount % 30 === 0) {
+                  log('📡', 'Background prediction', Math.round(prediction.x), Math.round(prediction.y), 'count', window.__pumpLogCount);
+                }
+                // Manually update gaze position and broadcast
+                gazeDot.style.left = `${prediction.x}px`;
+                gazeDot.style.top = `${prediction.y}px`;
+                state.lastDataTs = now; // Update timestamp so we don't pump again too soon
+
+                // Broadcast for extension
+                try {
+                  if (!window.__gazeChannel) {
+                    window.__gazeChannel = new BroadcastChannel('eyetracker_gaze');
+                    log('📡', 'BroadcastChannel created (pump)');
+                  }
+                  window.__gazeChannel.postMessage({ x: prediction.x, y: prediction.y, ts: Date.now() });
+                  localStorage.setItem('eyetracker_gaze', JSON.stringify({ x: prediction.x, y: prediction.y, ts: Date.now() }));
+                } catch (e) { }
+              }
+            } catch (e) {
+              // Ignore errors during background processing
+            }
+          }
+        }
+
+        // Also ensure WebGazer stays resumed
+        if (now - state.lastResumeTs > 1000) {
+          state.lastResumeTs = now;
+          webgazer.resume?.();
+        }
+      };
+
+      log('✅', 'Worker-based WebGazer pump started');
+    };
+
+    log('🧪', 'Background pump ready (will start after calibration)');
 
     // Show video feedback for calibration
     webgazer.showVideo(true);
     webgazer.showFaceOverlay(true);
     webgazer.showFaceFeedbackBox(true);
+    log('🎥', 'WebGazer video/overlays shown for calibration');
 
     // Wait for TensorFlow model to fully load (it's a large model)
     statusEl.textContent = 'Loading face detection model...';
     console.log('Waiting for TensorFlow FaceMesh model to load...');
+    log('⏳', 'Waiting for face detection model');
 
     // Wait up to 10 seconds for face detection to start working
     let faceDetected = false;
@@ -315,8 +637,12 @@ async function startTracking(e) {
       // Check if we're getting valid predictions yet
       const prediction = webgazer.getCurrentPrediction();
       if (prediction) {
-        console.log('Face detection working! Got prediction:', prediction);
+        log('✅', 'Face detection working! Got prediction:', prediction);
         faceDetected = true;
+        state.faceReady = true;
+        if (state.pendingCalibration) {
+          startCalibration();
+        }
         break;
       }
 
@@ -325,18 +651,22 @@ async function startTracking(e) {
       if (tracker && tracker.getPositions) {
         const positions = tracker.getPositions();
         if (positions && positions.length > 0) {
-          console.log('Face mesh detected:', positions.length, 'points');
+          log('✅', 'Face mesh detected:', positions.length, 'points');
           faceDetected = true;
+          state.faceReady = true;
+          if (state.pendingCalibration) {
+            startCalibration();
+          }
           break;
         }
       }
 
       statusEl.textContent = `Loading face detection... (${i + 1}/20)`;
-      console.log('Waiting for face detection...', i + 1);
+      log('⏳', 'Waiting for face detection...', i + 1);
     }
 
     if (!faceDetected) {
-      console.warn('Face detection not confirmed, but continuing anyway...');
+      warn('⚠️', 'Face detection not confirmed, but continuing anyway...');
       statusEl.textContent = 'Warning: Face not detected - make sure your face is visible';
       await new Promise(r => setTimeout(r, 2000));
     }
@@ -344,13 +674,14 @@ async function startTracking(e) {
     // Check if we can detect a face before calibration
     const videoEl = document.getElementById('webgazerVideoFeed');
     if (videoEl) {
-      console.log('Video feed ready:', videoEl.videoWidth, 'x', videoEl.videoHeight);
+      log('🎥', 'Video feed ready:', videoEl.videoWidth, 'x', videoEl.videoHeight);
     }
 
     statusEl.textContent = 'Starting calibration...';
+    log('🎯', 'Starting calibration flow');
     startCalibration();
   } catch (err) {
-    console.error('WebGazer error:', err);
+    error('❌', 'WebGazer error:', err);
     statusEl.textContent = 'Error: ' + err.message;
     state.started = false;
     startOverlay.classList.add('active');
@@ -371,9 +702,9 @@ function attachStartListeners() {
   if (btn) {
     btn.addEventListener('click', startTracking);
     btn.addEventListener('pointerdown', startTracking);
-    console.log('Start button listeners attached');
+    log('🔌', 'Start button listeners attached');
   } else {
-    console.error('Start button not found!');
+    error('❌', 'Start button not found!');
   }
 
   if (overlay) {
@@ -388,6 +719,7 @@ setInterval(() => {
   const now = performance.now();
   if (now - state.lastDataTs > 3000) {
     statusEl.textContent = 'Status: no gaze data (check camera permission)';
+    warn('⚠️', 'No gaze data for >3s');
   }
 }, 1000);
 
@@ -398,6 +730,7 @@ let calibrationRecordInterval = null;
 calibrationDot.addEventListener('mousedown', (ev) => {
   if (!state.calibrating) return;
   ev.preventDefault();
+  log('🖱️', 'Calibration dot mousedown');
 
   const rect = calibrationDot.getBoundingClientRect();
   const cx = rect.left + rect.width / 2;
@@ -408,31 +741,36 @@ calibrationDot.addEventListener('mousedown', (ev) => {
 
   // Track sample recording
   let sampleCount = 0;
+  let missingPositions = 0;
 
   // Record samples continuously while holding - record more frequently for better training
   calibrationRecordInterval = setInterval(() => {
-    // Check if WebGazer has eye features before recording
+    let hasPositions = true;
     try {
       const tracker = webgazer.getTracker();
       if (tracker && tracker.getPositions) {
         const positions = tracker.getPositions();
-        if (positions && positions.length > 0) {
-          webgazer.recordScreenPosition(cx, cy, 'click');
-          sampleCount++;
-          if (sampleCount % 10 === 0) {
-            console.log(`Recorded ${sampleCount} samples at (${cx}, ${cy}) with face mesh active`);
-          }
-        } else {
-          console.log('No face mesh positions - sample skipped');
-        }
-      } else {
-        // Still try to record - internal eye feature detection may work
-        webgazer.recordScreenPosition(cx, cy, 'click');
-        sampleCount++;
+        hasPositions = !!(positions && positions.length > 0);
       }
     } catch (e) {
+      // If tracker access fails, still try to record
+      hasPositions = true;
+    }
+
+    try {
       webgazer.recordScreenPosition(cx, cy, 'click');
       sampleCount++;
+    } catch (e) {
+      // Ignore record errors
+    }
+
+    if (!hasPositions) {
+      missingPositions++;
+      if (missingPositions % 20 === 0) {
+        warn('??', 'No face mesh positions during calibration samples:', missingPositions);
+      }
+    } else if (sampleCount % 10 === 0) {
+      log('??', `Recorded ${sampleCount} samples at (${cx}, ${cy})`);
     }
   }, 30);
 
@@ -441,6 +779,11 @@ calibrationDot.addEventListener('mousedown', (ev) => {
     clearInterval(calibrationRecordInterval);
     calibrationDot.classList.remove('holding');
     calibrationDot.classList.add('ready');
+    log('✅', 'Calibration point completed', state.calibrationIndex);
+    if (missingPositions >= sampleCount && sampleCount > 0) {
+      warn('??', 'No face mesh data captured for this point');
+      statusEl.textContent = 'No face mesh data captured. Adjust lighting or camera angle.';
+    }
 
     state.calibrationIndex += 1;
     updateCalibrationProgress();
@@ -454,26 +797,31 @@ calibrationDot.addEventListener('mousedown', (ev) => {
         const regs = webgazer.getRegression();
         if (regs && regs[0] && regs[0].getData) {
           const data = regs[0].getData();
-          console.log('Calibration complete! Regression data:', data);
+          log('✅', 'Calibration complete! Regression data:', data);
           if (data && data.length !== undefined) {
-            console.log('Training samples collected:', data.length);
+            log('📊', 'Training samples collected:', data.length);
             statusEl.textContent = `Tracking active (${data.length} samples) - look around!`;
           } else {
-            console.log('Data structure:', typeof data, data);
+            log('📦', 'Data structure:', typeof data, data);
             statusEl.textContent = 'Tracking active - look around!';
           }
         } else {
-          console.log('Could not get regression data');
+          warn('⚠️', 'Could not get regression data');
           statusEl.textContent = 'Tracking active - look around!';
         }
       } catch (e) {
-        console.log('Error checking regression data:', e);
+        error('❌', 'Error checking regression data:', e);
         statusEl.textContent = 'Tracking active - look around!';
       }
 
       webgazer.showVideo(false);
       webgazer.showFaceOverlay(false);
       webgazer.showFaceFeedbackBox(false);
+
+      // Start the background pump now that calibration is complete
+      if (window.__startBackgroundPump) {
+        window.__startBackgroundPump();
+      }
       return;
     }
     moveCalibrationDot();
@@ -491,6 +839,7 @@ calibrationDot.addEventListener('mouseup', () => {
     calibrationRecordInterval = null;
   }
   calibrationDot.classList.remove('holding');
+  log('🖱️', 'Calibration dot mouseup');
 });
 
 calibrationDot.addEventListener('mouseleave', () => {
@@ -503,4 +852,5 @@ calibrationDot.addEventListener('mouseleave', () => {
     calibrationRecordInterval = null;
   }
   calibrationDot.classList.remove('holding');
+  log('🖱️', 'Calibration dot mouseleave');
 });
