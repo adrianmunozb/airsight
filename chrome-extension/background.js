@@ -3,6 +3,7 @@
 
 let isTracking = false;
 let lastGazePosition = { x: 0, y: 0, vw: 0, vh: 0 }; // Store last position for new tab connections
+let userStopped = false;
 const NATIVE_HOST_NAME = 'com.eyetracker.server';
 const log = (emoji, ...args) => console.log(`${emoji} Eye Tracker:`, ...args);
 const warn = (emoji, ...args) => console.warn(`${emoji} Eye Tracker:`, ...args);
@@ -100,6 +101,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     switch (message.type) {
         case 'START_TRACKING':
             isTracking = true;
+            userStopped = false;
             chrome.storage.local.set({ isTracking: true });
             requestKeepAwake();
             log('START', 'Tracking started');
@@ -109,6 +111,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
         case 'STOP_TRACKING':
             isTracking = false;
+            userStopped = true;
             chrome.storage.local.set({ isTracking: false });
             releaseKeepAwake();
             log('STOP', 'Tracking stopped');
@@ -143,6 +146,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             // Received from content script on tracker page, broadcast to all other tabs
             // Store the latest position for newly connected tabs
             lastGazePosition = { x: message.x, y: message.y, vw: message.vw, vh: message.vh };
+            if (userStopped) {
+                break;
+            }
             if (isTracking) {
                 broadcastGaze(message.x, message.y, message.vw, message.vh);
             }

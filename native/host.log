@@ -84,3 +84,54 @@
 [2026-02-04 11:47:24] Received command: startServer port=8888
 [2026-02-04 11:47:24] Server already running on port 8888
 [2026-02-04 11:47:24] No more messages, exiting
+[2026-02-06 09:51:32] Native host started
+[2026-02-06 09:51:32] Using web directory: C:\Users\adria\eyetracker\web
+[2026-02-06 09:51:32] Received command: startServer port=8888
+[2026-02-06 09:51:32] Server already running on port 8888
+[2026-02-06 09:51:32] No more messages, exiting
+[2026-02-06 09:57:03] Native host started
+[2026-02-06 09:57:03] Using web directory: C:\Users\adria\eyetracker\web
+[2026-02-06 09:57:03] Received command: startServer port=8888
+[2026-02-06 09:57:03] Server already running on port 8888
+[2026-02-06 09:57:03] No more messages, exiting
+[2026-02-06 10:39:33] Native host started
+[2026-02-06 10:39:33] Using web directory: C:\Users\adria\eyetracker\web
+[2026-02-06 10:39:33] Received command: startServer port=8888
+[2026-02-06 10:39:33] Server already running on port 8888
+[2026-02-06 10:39:33] No more messages, exiting
+[2026-02-06 10:42:11] Native host started
+[2026-02-06 10:42:11] Using web directory: C:\Users\adria\eyetracker\web
+[2026-02-06 10:42:11] Received command: startServer port=8888
+[2026-02-06 10:42:11] Server already running on port 8888
+[2026-02-06 10:42:11] No more messages, exiting
+[2026-02-06 10:42:21] Native host started
+[2026-02-06 10:42:21] Using web directory: C:\Users\adria\eyetracker\web
+[2026-02-06 10:42:21] Received command: startServer port=8888
+[2026-02-06 10:42:21] Server already running on port 8888
+[2026-02-06 10:42:21] No more messages, exiting
+[2026-02-12 10:50:38] Native host started
+[2026-02-12 10:50:38] Using web directory: C:\Users\adria\eyetracker\web
+[2026-02-12 10:50:38] Received command: startServer port=8888
+[2026-02-12 10:50:38] Started server process on port 8888 with C:\Python313\python.exe
+[2026-02-12 10:50:39] Server is listening on port 8888
+[2026-02-12 10:50:39] No more messages, exiting
+[2026-02-12 10:50:40] Native host started
+[2026-02-12 10:50:40] Using web directory: C:\Users\adria\eyetracker\web
+[2026-02-12 10:50:40] Received command: startServer port=8888
+[2026-02-12 10:50:40] Server already running on port 8888
+[2026-02-12 10:50:40] No more messages, exiting
+[2026-02-12 10:51:49] Native host started
+[2026-02-12 10:51:49] Using web directory: C:\Users\adria\eyetracker\web
+[2026-02-12 10:51:49] Received command: startServer port=8888
+[2026-02-12 10:51:49] Server already running on port 8888
+[2026-02-12 10:51:49] No more messages, exiting
+[2026-02-12 10:52:53] Native host started
+[2026-02-12 10:52:53] Using web directory: C:\Users\adria\eyetracker\web
+[2026-02-12 10:52:53] Received command: startServer port=8888
+[2026-02-12 10:52:53] Server already running on port 8888
+[2026-02-12 10:52:53] No more messages, exiting
+[2026-02-12 10:54:25] Native host started
+[2026-02-12 10:54:25] Using web directory: C:\Users\adria\eyetracker\web
+[2026-02-12 10:54:25] Received command: startServer port=8888
+[2026-02-12 10:54:25] Server already running on port 8888
+[2026-02-12 10:54:25] No more messages, exiting

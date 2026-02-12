@@ -226,6 +226,34 @@
   `;
   gazeDot.appendChild(pulseRing);
 
+  const scrollZoneUp = document.createElement('div');
+  scrollZoneUp.id = 'eye-tracker-scroll-zone-up';
+  scrollZoneUp.style.cssText = `
+    position: fixed;
+    left: 0;
+    right: 0;
+    top: 0;
+    height: 0;
+    background: rgba(0, 200, 0, 0.18);
+    display: none;
+    pointer-events: none;
+    z-index: 2147483646;
+  `;
+
+  const scrollZoneDown = document.createElement('div');
+  scrollZoneDown.id = 'eye-tracker-scroll-zone-down';
+  scrollZoneDown.style.cssText = `
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 0;
+    background: rgba(0, 200, 0, 0.18);
+    display: none;
+    pointer-events: none;
+    z-index: 2147483646;
+  `;
+
   // Add keyframes animation
   const style = document.createElement('style');
   style.textContent = `
@@ -241,17 +269,29 @@
     }
   `;
 
+  function updateScrollZoneOverlays() {
+    const { topPx, bottomPx } = getScrollZonePx();
+    scrollZoneUp.style.height = `${Math.round(topPx / 2)}px`;
+    scrollZoneDown.style.height = `${bottomPx}px`;
+  }
+
   // Wait for body to be available
   function init() {
     if (document.head) {
       document.head.appendChild(style);
     }
     if (document.body) {
+      updateScrollZoneOverlays();
+      document.body.appendChild(scrollZoneUp);
+      document.body.appendChild(scrollZoneDown);
       document.body.appendChild(gazeDot);
     } else {
       // Wait for body
       const observer = new MutationObserver(() => {
         if (document.body) {
+          updateScrollZoneOverlays();
+          document.body.appendChild(scrollZoneUp);
+          document.body.appendChild(scrollZoneDown);
           document.body.appendChild(gazeDot);
           observer.disconnect();
         }
@@ -264,6 +304,14 @@
     document.addEventListener('DOMContentLoaded', init);
   } else {
     init();
+  }
+
+  window.addEventListener('resize', updateScrollZoneOverlays);
+
+  function setTrackingActive(active) {
+    const display = active ? 'block' : 'none';
+    scrollZoneUp.style.display = display;
+    scrollZoneDown.style.display = display;
   }
 
   let isVisible = false;
@@ -287,6 +335,7 @@
       if (!isVisible) {
         gazeDot.style.display = 'block';
         isVisible = true;
+        setTrackingActive(true);
         log('👀', 'Gaze dot visible');
       }
       gazeDot.style.left = `${mapped.x}px`;
@@ -295,6 +344,7 @@
     } else if (message.type === 'HIDE_GAZE') {
       gazeDot.style.display = 'none';
       isVisible = false;
+      setTrackingActive(false);
       log('🙈', 'Gaze dot hidden');
     }
   });
@@ -307,8 +357,11 @@
     }
     if (response && response.isTracking) {
       log('✅', 'Tracking is active, waiting for gaze updates');
+      setTrackingActive(true);
       // Request an immediate position update
       chrome.runtime.sendMessage({ type: 'REQUEST_POSITION' }).catch(() => { });
+    } else {
+      setTrackingActive(false);
     }
   });
 
