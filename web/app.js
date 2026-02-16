@@ -120,6 +120,113 @@
     return null;
   }
 
+  // 4. MediaRecorder anti-throttle (PRIMARY - no user gesture needed)
+  // Chrome won't throttle a tab that has an active MediaRecorder on a live stream
+  // This is the most reliable technique because it doesn't depend on rAF or user gestures
+  let mediaRecorderAntiThrottleActive = false;
+  function startMediaRecorderAntiThrottle() {
+    if (mediaRecorderAntiThrottleActive) return;
+    try {
+      const videoEl = document.getElementById('webgazerVideoFeed');
+      if (!videoEl) {
+        warn('⚠️', 'MediaRecorder anti-throttle: no video element, retrying in 1s...');
+        setTimeout(startMediaRecorderAntiThrottle, 1000);
+        return;
+      }
+
+      // Get the live webcam stream directly from the video element
+      const stream = videoEl.srcObject;
+      if (!stream || !(stream instanceof MediaStream)) {
+        warn('⚠️', 'MediaRecorder anti-throttle: no srcObject stream, retrying in 1s...');
+        setTimeout(startMediaRecorderAntiThrottle, 1000);
+        return;
+      }
+
+      log('🎙️', 'Starting MediaRecorder anti-throttle on webcam stream...');
+
+      // Record the live webcam stream — Chrome keeps the media pipeline fully active
+      // when a MediaRecorder is consuming a live MediaStream
+      const recorder = new MediaRecorder(stream, {
+        mimeType: 'video/webm;codecs=vp8',
+        videoBitsPerSecond: 1000 // minimal bitrate, we just discard the data
+      });
+      recorder.ondataavailable = () => { }; // discard all recorded data
+      recorder.onerror = (e) => {
+        warn('⚠️', 'MediaRecorder error:', e);
+        mediaRecorderAntiThrottleActive = false;
+        // Retry after a short delay
+        setTimeout(startMediaRecorderAntiThrottle, 3000);
+      };
+      recorder.start(5000); // request data every 5s to keep it active
+
+      mediaRecorderAntiThrottleActive = true;
+      log('✅', 'MediaRecorder anti-throttle active — tab will not be throttled');
+    } catch (e) {
+      warn('⚠️', 'MediaRecorder anti-throttle failed:', e);
+    }
+  }
+
+  // 5. Picture-in-Picture anti-throttle (BONUS layer, requires user gesture)
+  // Chrome does NOT throttle tabs that have an active PiP window
+  let pipActive = false;
+  async function startPiPAntiThrottle() {
+    if (pipActive) return;
+    try {
+      const videoEl = document.getElementById('webgazerVideoFeed');
+      if (!videoEl) return;
+
+      // Try Document Picture-in-Picture API first (Chrome 116+)
+      if ('documentPictureInPicture' in window) {
+        log('🖼️', 'Using Document PiP API...');
+        const pipWindow = await documentPictureInPicture.requestWindow({
+          width: 1,
+          height: 1
+        });
+        // Clone the video into the PiP window so Chrome keeps this tab alive
+        const pipVideo = videoEl.cloneNode(true);
+        pipVideo.srcObject = videoEl.srcObject;
+        pipVideo.muted = true;
+        pipVideo.style.cssText = 'width:1px;height:1px;opacity:0.01;';
+        pipVideo.play().catch(() => { });
+        pipWindow.document.body.style.cssText = 'margin:0;padding:0;overflow:hidden;background:#000;';
+        pipWindow.document.body.appendChild(pipVideo);
+        pipActive = true;
+        log('✅', 'Document PiP anti-throttle active');
+        pipWindow.addEventListener('pagehide', () => {
+          pipActive = false;
+          log('⚠️', 'PiP window closed by user');
+        });
+        return;
+      }
+
+      // Fallback: Video element PiP API
+      if (videoEl.requestPictureInPicture && document.pictureInPictureEnabled) {
+        log('🖼️', 'Using Video PiP fallback...');
+        if (videoEl.readyState < 2) {
+          await new Promise(r => { videoEl.addEventListener('loadeddata', r, { once: true }); });
+        }
+        await videoEl.requestPictureInPicture();
+        pipActive = true;
+        log('✅', 'Video PiP anti-throttle active');
+        videoEl.addEventListener('leavepictureinpicture', () => {
+          pipActive = false;
+          log('⚠️', 'Video PiP closed by user');
+        });
+        return;
+      }
+    } catch (e) {
+      warn('⚠️', 'PiP anti-throttle failed (non-critical):', e.message);
+    }
+  }
+
+  // Expose for post-calibration startup
+  window.__startAntiThrottle = function () {
+    // Primary: MediaRecorder on live webcam stream (no gesture needed, fully reliable)
+    startMediaRecorderAntiThrottle();
+    // Bonus: try PiP if we're within a user gesture context
+    startPiPAntiThrottle();
+  };
+
   function startAllKeepalive() {
     if (keepaliveStarted) return;
     keepaliveStarted = true;
@@ -572,7 +679,7 @@ async function startTracking(e) {
 
       // Create a worker that sends ticks at full speed
       const pumpWorkerCode = `
-        setInterval(() => postMessage('tick'), 100);
+        setInterval(() => postMessage('tick'), 50);
       `;
       const pumpBlob = new Blob([pumpWorkerCode], { type: 'application/javascript' });
       const pumpWorker = new Worker(URL.createObjectURL(pumpBlob));
@@ -582,10 +689,10 @@ async function startTracking(e) {
         // This prevents double-calculation when the tab is active
         const now = performance.now();
         const timeSinceLastUpdate = now - state.lastDataTs;
-        if (now - state.lastPumpTs < 200) return;
+        if (now - state.lastPumpTs < 100) return;
         state.lastPumpTs = now;
 
-        if (state.started && !state.calibrating && timeSinceLastUpdate > 200) {
+        if (state.started && !state.calibrating && timeSinceLastUpdate > 100) {
           // It's been >200ms since last update, so the main loop is likely throttled/paused
           // Force a frame processing
           if (webgazer.getCurrentPrediction) {
@@ -596,7 +703,21 @@ async function startTracking(e) {
                 videoEl.play().catch(() => { });
               }
 
-              // This forces WebGazer to process the current video frame
+              // CRITICAL: Draw fresh video frame onto WebGazer's internal canvas
+              // WebGazer's main rAF loop (Z) does this but getCurrentPrediction (K) does NOT.
+              // Without this, background predictions use stale canvas frames = bad accuracy.
+              const wgCanvas = webgazer.getVideoElementCanvas ? webgazer.getVideoElementCanvas() : null;
+              if (wgCanvas && videoEl && videoEl.readyState >= 2) {
+                const ctx = wgCanvas.getContext('2d');
+                if (ctx) {
+                  // Match canvas size to video (same as WebGazer's main loop)
+                  if (wgCanvas.width !== videoEl.videoWidth) wgCanvas.width = videoEl.videoWidth;
+                  if (wgCanvas.height !== videoEl.videoHeight) wgCanvas.height = videoEl.videoHeight;
+                  ctx.drawImage(videoEl, 0, 0, wgCanvas.width, wgCanvas.height);
+                }
+              }
+
+              // Now get a prediction using the fresh frame we just drew
               const prediction = webgazer.getCurrentPrediction();
 
               // If we get a prediction, broadcast it
@@ -854,6 +975,12 @@ calibrationDot.addEventListener('mousedown', (ev) => {
       // Start the background pump now that calibration is complete
       if (window.__startBackgroundPump) {
         window.__startBackgroundPump();
+      }
+
+      // Start PiP anti-throttle to prevent Chrome from freezing this tab
+      if (window.__startAntiThrottle) {
+        // Small delay to let WebGazer stabilize before opening PiP
+        setTimeout(() => window.__startAntiThrottle(), 1000);
       }
       return;
     }
