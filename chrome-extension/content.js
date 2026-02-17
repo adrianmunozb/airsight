@@ -366,12 +366,13 @@
   window.addEventListener('resize', updateScrollZoneOverlays);
 
   function setTrackingActive(active) {
-    const display = active ? 'block' : 'none';
+    const display = (active && overlayVisible) ? 'block' : 'none';
     scrollZoneUp.style.display = display;
     scrollZoneDown.style.display = display;
   }
 
   let isVisible = false;
+  let overlayVisible = true; // Whether overlay visuals are shown (tracking still runs when false)
 
   function mapGazeToViewport(message) {
     let x = message.x;
@@ -390,9 +391,11 @@
     if (message.type === 'GAZE_UPDATE') {
       const mapped = mapGazeToViewport(message);
       if (!isVisible) {
-        gazeDot.style.display = 'block';
         isVisible = true;
         setTrackingActive(true);
+        if (overlayVisible) {
+          gazeDot.style.display = 'block';
+        }
         log('👀', 'Gaze dot visible');
       }
       gazeDot.style.left = `${mapped.x}px`;
@@ -403,6 +406,14 @@
       isVisible = false;
       setTrackingActive(false);
       log('🙈', 'Gaze dot hidden');
+    } else if (message.type === 'SET_OVERLAY_VISIBLE') {
+      overlayVisible = message.visible;
+      if (isVisible) {
+        gazeDot.style.display = overlayVisible ? 'block' : 'none';
+        scrollZoneUp.style.display = overlayVisible ? 'block' : 'none';
+        scrollZoneDown.style.display = overlayVisible ? 'block' : 'none';
+      }
+      log('👁️', overlayVisible ? 'Overlay shown' : 'Overlay hidden (still tracking)');
     }
   });
 
@@ -420,6 +431,11 @@
     } else {
       setTrackingActive(false);
     }
+  });
+
+  // Load initial overlay visibility from storage
+  chrome.storage.local.get(['overlayVisible'], (data) => {
+    overlayVisible = data.overlayVisible !== false; // default true
   });
 
   // Heartbeat to maintain connection and ensure we receive updates

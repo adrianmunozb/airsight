@@ -8,11 +8,15 @@ const stopBtn = document.getElementById('stop-btn');
 const toggleIcon = document.getElementById('toggle-icon');
 const toggleText = document.getElementById('toggle-text');
 const errorText = document.getElementById('error-text');
+const overlayToggleBtn = document.getElementById('overlay-toggle-btn');
+const overlayToggleIcon = document.getElementById('overlay-toggle-icon');
+const overlayToggleText = document.getElementById('overlay-toggle-text');
 
 let currentStatus = {
     isTracking: false,
     isCalibrated: false
 };
+let overlayVisible = true;
 
 const log = (emoji, ...args) => console.log(`${emoji} Eye Tracker:`, ...args);
 const warn = (emoji, ...args) => console.warn(`${emoji} Eye Tracker:`, ...args);
@@ -30,21 +34,25 @@ function updateUI() {
         statusText.textContent = 'Tracking active';
         toggleBtn.style.display = 'none';
         stopBtn.style.display = 'flex';
-        calibrateBtn.textContent = '?? Recalibrate';
+        overlayToggleBtn.style.display = 'flex';
+        calibrateBtn.textContent = '🎯 Recalibrate';
+        updateOverlayToggleUI();
     } else if (currentStatus.isCalibrated) {
         statusIndicator.classList.remove('active', 'calibrating');
         statusText.textContent = 'Calibrated - ready to track';
         toggleBtn.style.display = 'flex';
         stopBtn.style.display = 'none';
-        toggleIcon.textContent = '?';
+        overlayToggleBtn.style.display = 'none';
+        toggleIcon.textContent = '▶';
         toggleText.textContent = 'Start Tracking';
-        calibrateBtn.textContent = '?? Recalibrate';
+        calibrateBtn.textContent = '🎯 Recalibrate';
     } else {
         statusIndicator.classList.remove('active', 'calibrating');
         statusText.textContent = 'Not calibrated';
         toggleBtn.style.display = 'none';
         stopBtn.style.display = 'none';
-        calibrateBtn.textContent = '?? Start Tracker';
+        overlayToggleBtn.style.display = 'none';
+        calibrateBtn.textContent = '🎯 Start Tracker';
     }
 }
 
@@ -129,6 +137,43 @@ stopBtn.addEventListener('click', async () => {
     }
 });
 
+// Update overlay toggle button text
+function updateOverlayToggleUI() {
+    if (overlayVisible) {
+        overlayToggleIcon.textContent = '👁️';
+        overlayToggleText.textContent = 'Hide Overlay';
+    } else {
+        overlayToggleIcon.textContent = '🚫';
+        overlayToggleText.textContent = 'Show Overlay';
+    }
+}
+
+// Toggle overlay visibility
+overlayToggleBtn.addEventListener('click', async () => {
+    try {
+        overlayVisible = !overlayVisible;
+        await chrome.storage.local.set({ overlayVisible });
+        // Broadcast to all tabs
+        const tabs = await chrome.tabs.query({});
+        for (const tab of tabs) {
+            if (tab.id) {
+                chrome.tabs.sendMessage(tab.id, {
+                    type: 'SET_OVERLAY_VISIBLE',
+                    visible: overlayVisible
+                }).catch(() => { });
+            }
+        }
+        updateOverlayToggleUI();
+        log('👁️', overlayVisible ? 'Overlay shown' : 'Overlay hidden');
+    } catch (err) {
+        error('❌', 'Error toggling overlay:', err);
+    }
+});
+
 // Initialize
-log('?', 'Popup loaded');
+log('🚀', 'Popup loaded');
+chrome.storage.local.get(['overlayVisible'], (data) => {
+    overlayVisible = data.overlayVisible !== false; // default to true
+    updateOverlayToggleUI();
+});
 fetchStatus();

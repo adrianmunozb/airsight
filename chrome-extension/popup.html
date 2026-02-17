@@ -148,6 +148,18 @@
             background: #444;
         }
 
+        .btn-overlay-toggle {
+            background: var(--surface);
+            color: var(--text-secondary);
+            border: 1px solid var(--border);
+            font-size: 13px;
+            padding: 10px 16px;
+        }
+
+        .btn-overlay-toggle:hover {
+            background: rgba(255, 255, 255, 0.08);
+        }
+
         .footer-note {
             margin-top: 16px;
             font-size: 12px;
@@ -191,6 +203,9 @@
         </button>
         <button id="stop-btn" class="btn btn-stop" style="display: none;">
             <span>⏹</span> Stop Tracking
+        </button>
+        <button id="overlay-toggle-btn" class="btn btn-overlay-toggle" style="display: none;">
+            <span id="overlay-toggle-icon">👁️</span> <span id="overlay-toggle-text">Hide Overlay</span>
         </button>
     </div>
 
