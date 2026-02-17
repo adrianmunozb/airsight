@@ -10,16 +10,27 @@
   const warn = (emoji, ...args) => console.warn(`${emoji} Eye Tracker:`, ...args);
   const error = (emoji, ...args) => console.error(`${emoji} Eye Tracker:`, ...args);
   const scrollConfig = {
-    dwellMs: 500,
-    cooldownMs: 250,
-    scrollAmount: 140,
-    topZoneRatio: 0.26,
-    bottomZoneRatio: 0.2,
-    minZonePx: 140,
-    maxZonePx: 320
+    dwellMs: 400,          // Time to look at edge before scroll starts
+    topZoneRatio: 0.2,     // Screen ratio for top zone
+    bottomZoneRatio: 0.2,  // Screen ratio for bottom zone
+    minZonePx: 100,        // Min pixels for zone
+    maxZonePx: 250,        // Max pixels for zone
+    minSpeed: 1,           // Starting speed in px/frame (~60px/sec)
+    maxSpeed: 12,          // Max speed in px/frame (~720px/sec)
+    rampDurationMs: 4000,  // Time to reach max speed (4 seconds)
+    friction: 0.88         // Slow down factor when leaving zone
   };
-  const scrollState = { lastZone: null, zoneStart: 0, lastFire: 0 };
+
+  const scrollState = {
+    currentZone: null,
+    zoneEnterTime: 0,
+    scrollingStartTime: 0, // When dwell threshold was crossed
+    velocity: 0,
+    activeTarget: null
+  };
+
   let lastScrollTarget = null;
+  let scrollRafId = null;
 
   function clamp(value, min, max) {
     return Math.min(max, Math.max(min, value));
@@ -63,12 +74,14 @@
         target = root;
       }
     }
-    if (!target) {
-      scrollState.lastZone = null;
-      return;
-    }
-    if (target !== lastScrollTarget) {
+
+    // Update active target
+    if (target) {
       lastScrollTarget = target;
+      scrollState.activeTarget = target;
+    } else {
+      scrollState.currentZone = null;
+      return;
     }
 
     const { topPx, bottomPx } = getScrollZonePx();
@@ -81,23 +94,67 @@
     if (zone === 'up' && !canUp) zone = null;
     if (zone === 'down' && !canDown) zone = null;
 
-    if (zone !== scrollState.lastZone) {
-      scrollState.lastZone = zone;
-      scrollState.zoneStart = now;
-      return;
-    }
-    if (!zone) return;
-    if (now - scrollState.zoneStart < scrollConfig.dwellMs) return;
-    if (now - scrollState.lastFire < scrollConfig.cooldownMs) return;
-
-    scrollState.lastFire = now;
-    const delta = zone === 'up' ? -scrollConfig.scrollAmount : scrollConfig.scrollAmount;
-    if (typeof target.scrollBy === 'function') {
-      target.scrollBy(0, delta);
-    } else {
-      target.scrollTop += delta;
+    if (zone !== scrollState.currentZone) {
+      scrollState.currentZone = zone;
+      scrollState.zoneEnterTime = now;
+      scrollState.scrollingStartTime = 0; // Reset progressive ramp
     }
   }
+
+  // Smooth scrolling loop
+  function updateScrollPhysics() {
+    const now = performance.now();
+    let targetVelocity = 0;
+
+    // Determine target velocity based on gaze zone dwell time
+    if (scrollState.currentZone && (now - scrollState.zoneEnterTime > scrollConfig.dwellMs)) {
+      // Track when scrolling actually started (after dwell)
+      if (scrollState.scrollingStartTime === 0) {
+        scrollState.scrollingStartTime = now;
+      }
+
+      // Progressive speed: ramp from minSpeed to maxSpeed over rampDurationMs
+      const scrollingDuration = now - scrollState.scrollingStartTime;
+      const progress = clamp(scrollingDuration / scrollConfig.rampDurationMs, 0, 1);
+      // Ease-in curve for a gentler start
+      const easedProgress = progress * progress;
+      const speed = scrollConfig.minSpeed + (scrollConfig.maxSpeed - scrollConfig.minSpeed) * easedProgress;
+
+      if (scrollState.currentZone === 'up') targetVelocity = -speed;
+      if (scrollState.currentZone === 'down') targetVelocity = speed;
+    }
+
+    // Apply physics
+    if (targetVelocity !== 0) {
+      // Snap to target velocity (progressive ramp already handles acceleration)
+      scrollState.velocity = targetVelocity;
+    } else {
+      // Decelerate (friction) — soft stop
+      scrollState.velocity *= scrollConfig.friction;
+      if (Math.abs(scrollState.velocity) < 0.1) scrollState.velocity = 0;
+    }
+
+    // Apply scroll if needed
+    if (Math.abs(scrollState.velocity) > 0.1 && scrollState.activeTarget) {
+      // Verify target is still valid/attached
+      const t = scrollState.activeTarget;
+      // Simple check if it's still in document or is root
+      const isRoot = t === document.documentElement || t === document.body || t === document.scrollingElement;
+
+      if (isRoot || document.contains(t)) {
+        if (typeof t.scrollBy === 'function') {
+          t.scrollBy(0, scrollState.velocity);
+        } else {
+          t.scrollTop += scrollState.velocity;
+        }
+      }
+    }
+
+    scrollRafId = requestAnimationFrame(updateScrollPhysics);
+  }
+
+  // Start the physics loop
+  updateScrollPhysics();
 
   const isTrackerPage = window.location.hostname === 'localhost' &&
     (window.location.port === '8888' || window.location.port === '5500' || window.location.port === '3000');
